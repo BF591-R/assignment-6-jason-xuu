@@ -33,7 +33,13 @@ for (package in libs) {
 #'
 #' @examples counts_df <- load_n_trim("/path/to/counts/verse_counts.tsv")
 load_n_trim <- function(filename) {
-    return(NULL)
+  # read count data, set up genes as row names
+  counts <- read.csv(filename, sep = "\t", header = TRUE, row.names = 1)
+  
+  # subset to only the columns we actually want to examine
+  trimmed_df <- counts[, c("vP0_1", "vP0_2", "vAd_1", "vAd_2")]
+  
+  return(trimmed_df)
 }
 
 #' Perform a DESeq2 analysis of rna seq data
@@ -57,7 +63,20 @@ load_n_trim <- function(filename) {
 #'
 #' @examples run_deseq(counts_df, coldata, 10, "condition_day4_vs_day7")
 run_deseq <- function(count_dataframe, coldata, count_filter, condition_name) {
-    return(NULL)
+  # basic filtering: keep genes that have at least 'count_filter' counts across all samples
+  filtered_counts <- count_dataframe[rowSums(count_dataframe) >= count_filter, ]
+  
+  # construct object 
+  dds <- DESeqDataSetFromMatrix(countData = filtered_counts,
+                                colData = coldata,
+                                design = ~ condition)
+                                
+  # run standard pipeline
+  dds <- DESeq(dds)
+  
+  # grab the results
+  res <- results(dds, name=condition_name)
+  return(res)
 }
 
 #### edgeR ####
@@ -77,7 +96,23 @@ run_deseq <- function(count_dataframe, coldata, count_filter, condition_name) {
 #'
 #' @examples run_edger(counts_df, group)
 run_edger <- function(count_dataframe, group) {
-    return(NULL)
+  # initialize edgeR DGEList
+  dge <- DGEList(counts = count_dataframe, group = group)
+  
+  # filter unexpressed genes
+  keep <- filterByExpr(dge, group = group)
+  dge <- dge[keep, , keep.lib.sizes = FALSE]
+  
+  # normalization
+  dge <- calcNormFactors(dge)
+  
+  # estimate dispersions (common, trended, tagwise)
+  dge <- estimateDisp(dge)
+  
+  # exact test
+  et <- exactTest(dge)
+  
+  return(et$table)
 }
 
  #### limma ####
@@ -101,7 +136,24 @@ run_edger <- function(count_dataframe, group) {
 #' 
 #' @examples run_limma(counts_df, design, voom=TRUE)
 run_limma <- function(counts_dataframe, design, group) {
-    return(NULL)
+  # set up DGEList
+  dge <- DGEList(counts = counts_dataframe, group = group)
+  
+  # filter and normalize just like in edgeR
+  keep <- filterByExpr(dge, design)
+  dge <- dge[keep, , keep.lib.sizes = FALSE]
+  dge <- calcNormFactors(dge)
+  
+  # voom transformation
+  v <- voom(dge, design, plot = FALSE)
+  
+  # linear modeling
+  fit <- lmFit(v, design)
+  fit <- eBayes(fit)
+  
+  # get results without any sort
+  res <- topTable(fit, coef = ncol(design), number = nrow(counts_dataframe), sort.by = "none")
+  return(res)
 }
 
 #### ggplot ####
@@ -133,7 +185,14 @@ run_limma <- function(counts_dataframe, design, group) {
 #' 2 deseq   9.97e-261
 #' 3 deseq   1.16e-206
 combine_pval <- function(deseq, edger, limma) {
-    return(NULL)
+  # extract just packages and p-values
+  deseq_df <- data.frame(package = "DESeq2", pval = deseq$pvalue)
+  edger_df <- data.frame(package = "edgeR", pval = edger$PValue)
+  limma_df <- data.frame(package = "Limma", pval = limma$P.Value)
+  
+  # squish together and return as tibble
+  combined <- rbind(deseq_df, edger_df, limma_df)
+  return(as_tibble(combined))
 }
 
 #' Create three separate facets for each of the diff. exp. pacakges.
@@ -157,7 +216,22 @@ combine_pval <- function(deseq, edger, limma) {
 #' 1  -9.84 2.23e-180 edgeR  
 #' 2   6.18 5.87e-179 edgeR  
 create_facets <- function(deseq, edger, limma) {
-    return(NULL)
+  # grab logFC and adjusted p-value directly from the separate results
+  # edgeR should have padj added before this function is called
+  deseq_df <- data.frame(logFC = deseq$log2FoldChange,
+                         padj = deseq$padj,
+                         package = "DESeq2")
+                         
+  edger_df <- data.frame(logFC = edger$logFC,
+                         padj = edger$padj,
+                         package = "edgeR")
+                         
+  limma_df <- data.frame(logFC = limma$logFC,
+                         padj = limma$adj.P.Val,
+                         package = "Limma")
+                         
+  combined <- rbind(deseq_df, edger_df, limma_df)
+  return(as_tibble(combined))
 }
 
 #' Create an attractive volcano plot of three diff. exp. packages' data.
@@ -187,6 +261,18 @@ create_facets <- function(deseq, edger, limma) {
 #'
 #' @examples p <- theme_plot(volcano)
 theme_plot <- function(volcano_data) {
-    return(NULL)
+  # straightforward scatterplot formatted nicely
+  p <- ggplot(volcano_data, aes(x = logFC, y = -log10(padj), color = padj < 1e-100)) +
+    geom_point(alpha = 0.5, size = 1.2) +
+    facet_wrap(~ package) +          # facet per package
+    theme_minimal() +                # don't use default theme
+    scale_color_manual(values = c("gray10", "firebrick1")) + 
+    labs(title = "Volcano Plot: Differential Expression Models",
+         x = expression(Log[2]~Fold~Change),
+         y = expression(-Log[10](Adjusted~P-value)),
+         color = "Significant\n(padj < 1e-100)") +
+    theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+          legend.position = "bottom")
+  return(p)
 }
 
